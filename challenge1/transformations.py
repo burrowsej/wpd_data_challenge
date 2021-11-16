@@ -8,6 +8,7 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.multioutput import MultiOutputRegressor
 from sklearn.compose import TransformedTargetRegressor
 from sklearn.metrics import mean_squared_error
+from sklearn.inspection import permutation_importance
 from scipy.signal import hilbert
 
 
@@ -16,7 +17,7 @@ DAYS_PER_WEEK = 7
 # these are the final feature and target column names
 features = [
     f"{op}({col})"
-    for col in ("fraction_of_day", "fraction_of_week", "fraction_of_year")
+    for col in ("fraction_of_day", "fraction_of_week", "fraction_of_year")  # , "wind_orientation")
     for op in ("sin", "cos")
 ]
 features.extend(
@@ -28,16 +29,45 @@ features.extend(
         "fourth_derivative",
         "local_bandwidth",
         "year",
+        "temperature",
+        "solar_irradiance",
+        # "windspeed",
+        "windspeed_north",
+        "windspeed_east",
+        "pressure",
+        "spec_humidity",
     )
 )
 targets = ["value_max", "value_min"]
 
 
-def join(df_x, df_y):
+# weather data is lower resolution than power data
+def upsample(df):
+    df = df.copy()
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    df = df.set_index("datetime").resample("30Min").interpolate(method="linear")
+    df = df.reset_index()
+    df = df.rename(columns={"datetime": "time"})
+    df["time"] = df["time"].astype(str)
+    return df
+
+
+def join_x(df_x1, df_x2):
+    df = pd.merge(
+        left=df_x1,
+        right=df_x2,
+        on="time",
+        how="left",  # this might cause issues
+    )
+    return df
+
+
+def join_y(df_x, df_y):
     df = pd.merge(
         left=df_x,
         right=df_y,
         on="time",
+        how="left",  # this might cause issues
     )
     return df
 
@@ -59,7 +89,12 @@ def prepare(df):
         - df["year"].apply(lambda y: datetime(year=y, month=1, day=1))
         - timedelta(days=1)
     ) / df["year"].apply(lambda y: timedelta(days=366 if calendar.isleap(y) else 365))
-    df = df.drop(columns=["time", "month", "day"])
+    # df["windspeed"] = np.sqrt(df["windspeed_north"] ** 2 + df["windspeed_east"] ** 2)
+    # df["wind_orientation"] = np.arctan2(df["windspeed_north"], df["windspeed_east"])
+    # df["wind_orientation"] = (
+    #    df["wind_orientation"] % (2 * np.pi) / (2 * np.pi)
+    # )  # put it in range [0, 1) like others
+    df = df.drop(columns=["time", "month", "day"])  # , "windspeed_north", "windspeed_east"])
     return df
 
 
@@ -67,7 +102,11 @@ def prepare(df):
 # nb: no concern about leakage before splitting into train/valid bc encoder doesn't need to be fit
 def encode(df):
     df = df.copy()
-    for col in ("fraction_of_day", "fraction_of_week", "fraction_of_year"):
+    for col in (
+        "fraction_of_day",
+        "fraction_of_week",
+        "fraction_of_year",
+    ):  # , "wind_orientation"):
         df[f"sin({col})"] = np.sin(2 * np.pi * df[col])
         df[f"cos({col})"] = np.cos(2 * np.pi * df[col])
         df = df.drop(columns=col)
@@ -251,3 +290,16 @@ def submit(template, df_pred):
         validate="1:1",
     )
     return df
+
+
+def feature_importance(regr, df):
+    X = df[features]
+    ys = df[targets]
+    fi = permutation_importance(regr, X, ys)
+    px.bar(
+        x=features,
+        y=fi["importances_mean"],
+        log_y=True,
+    ).show()
+    print(fi)
+    afsdfdsfsd

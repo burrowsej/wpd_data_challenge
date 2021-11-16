@@ -19,6 +19,11 @@ raw_test_x:
   filepath: data/raw/western-power-distribution-data-challenge-1_-high-resolution-peak-estimation_staplegrove/MW_Staplegrove_CB905_MW_observation_variable_half_hourly_real_power_MW_september.csv
 
 
+raw_weather:
+  type: pandas.CSVDataSet
+  filepath: data/raw/weather/df_staplegrove_1_hourly.csv
+
+
 template_phase1:
   type: pandas.CSVDataSet
   filepath: data/raw/western-power-distribution-data-challenge-1_-high-resolution-peak-estimation_submission_template/Submission_template_august.csv
@@ -26,6 +31,7 @@ template_phase1:
 template_phase2:
   type: pandas.CSVDataSet
   filepath: data/raw/western-power-distribution-data-challenge-1_-high-resolution-peak-estimation_submission_template/Submisson_template_september.csv
+
 
 outputs_valid:
   type: pandas.CSVDataSet
