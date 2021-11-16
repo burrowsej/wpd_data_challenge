@@ -10,10 +10,23 @@ raw_train_y:
   type: pandas.CSVDataSet
   filepath: data/raw/western-power-distribution-data-challenge-1_-high-resolution-peak-estimation_staplegrove/MW_Staplegrove_CB905_MW_target_variable_half_hourly_max_min_real_power_MW_pre_august.csv
 
-raw_validate_x:
+raw_valid_x:
   type: pandas.CSVDataSet
   filepath: data/raw/western-power-distribution-data-challenge-1_-high-resolution-peak-estimation_staplegrove/MW_Staplegrove_CB905_MW_observation_variable_half_hourly_real_power_MW_august.csv
 
 raw_test_x:
   type: pandas.CSVDataSet
   filepath: data/raw/western-power-distribution-data-challenge-1_-high-resolution-peak-estimation_staplegrove/MW_Staplegrove_CB905_MW_observation_variable_half_hourly_real_power_MW_september.csv
+
+
+template_phase1:
+  type: pandas.CSVDataSet
+  filepath: data/raw/western-power-distribution-data-challenge-1_-high-resolution-peak-estimation_submission_template/Submission_template_august.csv
+
+template_phase2:
+  type: pandas.CSVDataSet
+  filepath: data/raw/western-power-distribution-data-challenge-1_-high-resolution-peak-estimation_submission_template/Submisson_template_september.csv
+
+outputs_valid:
+  type: pandas.CSVDataSet
+  filepath: data/outputs/valid/predictions.csv
