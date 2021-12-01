@@ -2,11 +2,24 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import calendar
+from typing import Optional
 from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import RandomForestRegressor
-import matplotlib.pyplot as plt
+from sklearn.preprocessing import (
+    PolynomialFeatures,
+    MinMaxScaler,
+    Normalizer,
+    StandardScaler,
+)
+from sklearn.linear_model import LinearRegression, RidgeCV
+from sklearn.ensemble import (
+    RandomForestRegressor,
+    GradientBoostingRegressor,
+    HistGradientBoostingRegressor,
+    BaggingRegressor,
+    AdaBoostRegressor,
+    VotingRegressor,
+    StackingRegressor,
+)
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.inspection import permutation_importance
@@ -14,146 +27,63 @@ from sklearn.multioutput import MultiOutputRegressor
 from sklearn.compose import TransformedTargetRegressor
 from functools import lru_cache
 from findiff import FinDiff
+from xgboost import XGBRegressor
+from lightgbm import LGBMRegressor
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import cross_val_score
+from typing import List
 
 
-def combine_features_targets(features: Path, targets: Path) -> pd.DataFrame:
-    basetable = pd.read_csv(
-        features,
-        parse_dates=["time"],
-        index_col="time",
-        dayfirst=True,
-    )
+TARGETS = ["value_max", "value_min"]
+rng = np.random.RandomState(7)
+# REGRESSOR = RandomForestRegressor(random_state=rng)  # 0.408
+# REGRESSOR = GradientBoostingRegressor(random_state=rng)  # 0.428
+# REGRESSOR = XGBRegressor(random_state=rng)  # 0.418
+# REGRESSOR = BaggingRegressor(XGBRegressor(random_state=rng))  # 0.4008
+# REGRESSOR = AdaBoostRegressor(
+#     XGBRegressor(random_state=rng), random_state=rng
+# )  # 0.3987, also was 0.3969
+# REGRESSOR = HistGradientBoostingRegressor(random_state=rng)  # 0.409
+# REGRESSOR = LGBMRegressor(random_state=rng)  # 0.410
+# REGRESSOR = BaggingRegressor(LGBMRegressor(random_state=rng))  # 0.3981
+# REGRESSOR = AdaBoostRegressor(LGBMRegressor(random_state=rng))  # 0.4101
 
-    targets = pd.read_csv(
-        targets,
-        parse_dates=["time"],
-        index_col="time",
-        dayfirst=True,
-    )
+REGRESSOR = VotingRegressor(
+    [
+        ("rf", RandomForestRegressor(random_state=rng)),
+        ("xgb", XGBRegressor(random_state=rng)),
+        ("lgbm", LGBMRegressor(random_state=rng)),
+        # ("hgb", HistGradientBoostingRegressor(random_state=rng)),
+    ]
+)
 
-    basetable = basetable.merge(targets, left_index=True, right_index=True)
-    return basetable
-
-
-def engineer_temporal_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Extracts temporal features from a datetime index"""
-
-    df["year"] = df.index.year
-
-    df["annual_quantile"] = df.index.map(
-        lambda x: x.dayofyear / (366 if calendar.isleap(x.year) else 365)
-    )
-
-    df["weekly_quantile"] = df.index.dayofweek
-
-    df["hour"] = df.index.hour + df.index.minute / 60
-
-    # encode cyclical features in two separate sin and cos transforms
-    max_vals = {"annual_quantile": 366, "weekly_quantile": 6, "hour": 23.5}
-    for col in max_vals:
-        df[f"sin_{col}"] = np.sin((2 * np.pi * df[col]) / max_vals[col])
-        df[f"cos_{col}"] = np.cos((2 * np.pi * df[col]) / max_vals[col])
-        # df.plot.scatter(f"sin_{col}", f"cos_{col}").set_aspect("equal")
-        df.drop(columns=col, inplace=True)
-
-    return df
+# REGRESSOR = StackingRegressor(
+#     [
+#         ("rf", RandomForestRegressor(random_state=rng)),
+#         ("xgb", XGBRegressor(random_state=rng)),
+#         ("lgbm", LGBMRegressor(random_state=rng)),
+#         ("hgb", HistGradientBoostingRegressor(random_state=rng)),
+#     ],
+#     RidgeCV(),
+# )
 
 
-def get_rmse(day: pd.DataFrame) -> float:
-    """Fit a polynomial and get the rmse to quantify noise for the day"""
-    X = np.c_[day.index.hour + day.index.minute / 60]
-    y = day.value.values
-
-    polyreg = make_pipeline(PolynomialFeatures(degree=7), LinearRegression())
-    polyreg.fit(X, y)
-
-    rmse = np.sqrt(mean_squared_error(y, polyreg.predict(X)))
-
-    return rmse
-
-
-def engineer_30min_demand_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Extracts features form 30min demand data"""
-
-    # forward and backward diffs
-    # TODO: replace this with Elliot's finite difference thing
-    # df["diff_forwards"] = df.value.diff(periods=-1).ffill()
-    # df["diff_backwards"] = df.value.diff(periods=1).bfill()
-
-    # finite difference method to calculate derivatives
-    accuracy = 2
-    for d in range(1, 6):
-        derivative = FinDiff(0, accuracy, d)
-        df[f"d{d}_value"] = derivative(df.value)
-    #     df[f"d{d}_value"].head(50).plot()
-    # plt.legend()
-    # plt.rcParams["figure.figsize"] = (12, 6)
-    # plt.show()
-
-    # daily noise
-    df["date"] = df.index.date
-    rmse_by_day = df.groupby("date").apply(get_rmse)
-    rmse_by_day = pd.Series(rmse_by_day, name="daily_noise")
-    df.drop(columns="date", inplace=True)
-
-    df = df.merge(rmse_by_day, left_index=True, right_index=True, how="left")
-    df.daily_noise.ffill(inplace=True)
-
-    return df
-
-
-def engineer_weather_features(df: pd.DataFrame, weather_path: Path) -> pd.DataFrame:
-    """Extracts features from weather data and joins it to basetable"""
-    weather = pd.read_csv(
-        weather_path,
-        parse_dates=["datetime"],
-        index_col="datetime",
-        dayfirst=True,
-    )
-
-    # resample to 30mins to get same as demand data
-    weather = weather.resample("30T").mean()
-    weather = weather.interpolate()
-
-    # derivatives of irradiance
-    # accuracy = 2
-    # for d in range(1, 6):
-    #     derivative = FinDiff(0, accuracy, d)
-    #     weather[f"d{d}_solar_irradiance"] = derivative(weather.solar_irradiance)
-
-    # vectorise wind speed components
-    weather["windspeed"] = weather.apply(
-        lambda x: np.sqrt(x.windspeed_north ** 2 + x.windspeed_east ** 2), axis=1
-    )
-    weather["winddirection"] = weather.apply(
-        lambda x: np.arctan2(x.windspeed_north, x.windspeed_east), axis=1
-    )
-
-    # TODO: read up on this and explore - should not need the pis and the 2s
-    weather["sin_winddirection"] = np.sin(
-        (2 * np.pi * weather["winddirection"]) / np.pi
-    )
-    weather["cos_winddirection"] = np.cos(
-        (2 * np.pi * weather["winddirection"]) / np.pi
-    )
-    # weather.plot.scatter("sin_winddirection", "cos_winddirection").set_aspect("equal")
-    weather.drop(columns="winddirection", inplace=True)
-
-    df = df.merge(weather, left_index=True, right_index=True, how="left")
-
-    return df
-
-
-def train(df, targets):
-    """Transforms the targets from max, min to var and skew, then fits
-    random forest regressor"""
+def get_Xy(df, targets=TARGETS):
+    """Splits dataframe into X features and ys targets"""
     features = [col for col in df.columns if col not in targets]
-
     X = df[features]
     ys = df[targets].values
+    return X, ys
+
+
+def transform_targets(regressor=REGRESSOR):
+    """Transforms targets from max, min to mean and range"""
+
     forward = lambda ys: np.vstack(
         (
-            # skew component (average which can be compared to value)
+            # skew component (mean which can be compared to value)
             0.5 * ys.sum(axis=1),
             # dispersion component (range)
             ys[:, 1] - ys[:, 0],
@@ -162,32 +92,118 @@ def train(df, targets):
     backward = lambda ys: np.vstack(
         (ys[:, 0] - 0.5 * ys[:, 1], ys[:, 0] + 0.5 * ys[:, 1])
     ).T
-    reg = TransformedTargetRegressor(
-        MultiOutputRegressor(RandomForestRegressor()),
-        func=forward,
-        inverse_func=backward,
-    )
+
+    # reg = make_pipeline(
+    #     # MinMaxScaler(),
+    #     # Normalizer(),
+    #     MultiOutputRegressor(estimator=regressor),
+    # )
+
+    reg = MultiOutputRegressor(estimator=regressor)
+
+    reg = TransformedTargetRegressor(reg, func=forward, inverse_func=backward)
+
+    return reg
+
+
+def train(X, ys, targets=TARGETS, reg=REGRESSOR):
+    """Splits dataframe into X and ys, transforms the targets and trains a model"""
+    # X, ys = get_Xy(df, targets)
+
+    reg = transform_targets(reg)
     reg.fit(X, ys)
     return reg
 
 
-def get_Xy(basetable: pd.DataFrame, target: str = "max"):
-    X = basetable.drop(columns=["value_max", "value_min"]).values
-    if target == "max":
-        y = basetable.value_max.values
-    elif target == "min":
-        y = basetable.value_min.values
-    else:
-        raise ValueError
-    return X, y
+def train_mean(df, targets=TARGETS, reg=REGRESSOR):
+    """Splits dataframe into X and ys, transforms the targets and trains a model"""
+    target_name = "target_mean"
+
+    df2 = df.copy()
+    df2[target_name] = df2[TARGETS].mean(axis=1)
+    df2.drop(columns=TARGETS, inplace=True)
+
+    # mean
+    X, y = df2.drop(columns=target_name), df2[target_name].values
+
+    reg.fit(X, y)
+    return reg
 
 
-def get_feature_importance(reg, X, y, df) -> pd.DataFrame():
+def train_range(df, targets=TARGETS, reg=REGRESSOR):
+    """Splits dataframe into X and ys, transforms the targets and trains a model"""
+    target_name = "target_range"
 
-    r = permutation_importance(reg, X, y, n_repeats=30, random_state=7)
+    df2 = df.copy()
+    df2[target_name] = df2[TARGETS].diff(axis=1).iloc[:, 1]
+    df2.drop(columns=TARGETS, inplace=True)
 
-    cols = df.columns.to_list()
-    feature_names = cols[:1] + cols[3:]
+    # mean
+    X, y = df2.drop(columns=target_name), df2[target_name].values
+
+    reg.fit(X, y)
+    return reg
+
+
+def gridsearch(
+    df,
+    targets=TARGETS,
+    reg=REGRESSOR,
+    parameters={
+        "regressor__estimator__n_estimators": range(50, 300, 50),
+        # "regressor__estimator__max_features": range(),
+    },
+):
+
+    X, ys = get_Xy(df, targets)
+    reg = transform_targets(reg)
+    reg = GridSearchCV(reg, parameters)
+    reg.fit(X, ys)
+
+    return reg
+
+
+def validate(reg, X, Y) -> pd.DataFrame:
+    df = Y.copy()
+    df[[f"pred({col})" for col in Y]] = reg.predict(X)
+    df.rename(columns={col: f"true({col})" for col in Y}, inplace=True)
+    return df
+
+
+def get_rmse(df: pd.DataFrame, targets: List[str]) -> float:
+    mse = 0
+    for col in targets:
+        mse += mean_squared_error(df[f"pred({col})"], df[f"true({col})"], squared=True)
+    rmse = np.sqrt(mse)
+    print(f"RMSE:{rmse:.4f}")
+    return rmse
+
+
+def benchmark(X: pd.DataFrame, Y: pd.DataFrame) -> pd.DataFrame:
+    """benchmark assumes min=max=value"""
+    df = Y.copy()
+    df[[f"pred({col})" for col in Y]] = np.repeat(X["value"].values[:, None], 2, axis=1)
+    df.rename(columns={col: f"true({col})" for col in Y}, inplace=True)
+    return df
+
+
+def get_score(score_model: float, score_benchmark: float) -> float:
+    """Score is ratio of model RMSE and benchmark RMSE"""
+    score = score_model / score_benchmark
+    print(f"Score:{score:.4f}")
+    return score
+
+
+def get_feature_importance(df, reg=REGRESSOR) -> pd.DataFrame():
+    """Return a dataframe of the importance of each feature and plot it"""
+
+    X, ys = get_Xy(df)
+    reg = transform_targets(reg)
+    reg.fit(X, ys)
+
+    r = permutation_importance(reg, X, ys)
+
+    feature_names = df.drop(columns=TARGETS).columns.to_list()
     features_importance = pd.DataFrame(
         {
             "mean_importance": r.importances_mean,
@@ -199,9 +215,22 @@ def get_feature_importance(reg, X, y, df) -> pd.DataFrame():
     features_importance.sort_values(by="mean_importance", inplace=True)
 
     features_importance.mean_importance.plot.barh(
+        xerr=features_importance.std_importance,
         logx=True,
         figsize=(10, 5),
         title="Feature importance",
     )
 
     return features_importance
+
+
+# import dabl
+
+# basetable2 = basetable.copy()
+# basetable2["target_mean"] = basetable2[TARGETS].mean(axis=1)
+# basetable2["target_range"] = basetable[TARGETS].diff(axis=1).iloc[:, 1]
+# basetable2.drop(columns=TARGETS, inplace=True)
+
+
+# dabl.plot(basetable2.drop(columns="target_mean"), "target_range")
+# dabl.plot(basetable2.drop(columns="target_range"), "target_mean")
