@@ -1,6 +1,7 @@
 from pathlib import Path
 import numpy as np
 import pandas as pd
+import calendar
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.linear_model import LinearRegression
@@ -8,32 +9,23 @@ from sklearn.ensemble import RandomForestRegressor
 import matplotlib.pyplot as plt
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.inspection import permutation_importance
+from sklearn.multioutput import MultiOutputRegressor
+from sklearn.compose import TransformedTargetRegressor
 from functools import lru_cache
 from findiff import FinDiff
 
 
-DATA_FOLDER = Path("data")
-TRAINING_FEATURES = "MW_Staplegrove_CB905_MW_observation_variable_half_hourly_real_power_MW_pre_august.csv"
-TRAINING_TARGETS = "MW_Staplegrove_CB905_MW_target_variable_half_hourly_max_min_real_power_MW_pre_august.csv"
-AUGUST_FEATURES = (
-    "MW_Staplegrove_CB905_MW_observation_variable_half_hourly_real_power_MW_august.csv"
-)
-AUGUST_TEMPLATE = "Submission_template_august.csv"
-SEPTEMBER_FEATURES = "MW_Staplegrove_CB905_MW_observation_variable_half_hourly_real_power_MW_september.csv"
-SEPTEMBER_TEMPLATE = "Submisson_template_september.csv"
-WEATHER = "df_staplegrove_1_hourly.csv"
-
-
 def combine_features_targets(features: Path, targets: Path) -> pd.DataFrame:
     basetable = pd.read_csv(
-        DATA_FOLDER / features,
+        features,
         parse_dates=["time"],
         index_col="time",
         dayfirst=True,
     )
 
     targets = pd.read_csv(
-        DATA_FOLDER / targets,
+        targets,
         parse_dates=["time"],
         index_col="time",
         dayfirst=True,
@@ -46,13 +38,18 @@ def combine_features_targets(features: Path, targets: Path) -> pd.DataFrame:
 def engineer_temporal_features(df: pd.DataFrame) -> pd.DataFrame:
     """Extracts temporal features from a datetime index"""
 
-    df["year"] = df.index.year + df.index.month / 12
-    df["month"] = df.index.month
-    df["dayofweek"] = df.index.dayofweek
+    df["year"] = df.index.year
+
+    df["annual_quantile"] = df.index.map(
+        lambda x: x.dayofyear / (366 if calendar.isleap(x.year) else 365)
+    )
+
+    df["weekly_quantile"] = df.index.dayofweek
+
     df["hour"] = df.index.hour + df.index.minute / 60
 
     # encode cyclical features in two separate sin and cos transforms
-    max_vals = {"month": 12, "dayofweek": 6, "hour": 23.5}
+    max_vals = {"annual_quantile": 366, "weekly_quantile": 6, "hour": 23.5}
     for col in max_vals:
         df[f"sin_{col}"] = np.sin((2 * np.pi * df[col]) / max_vals[col])
         df[f"cos_{col}"] = np.cos((2 * np.pi * df[col]) / max_vals[col])
@@ -83,9 +80,9 @@ def engineer_30min_demand_features(df: pd.DataFrame) -> pd.DataFrame:
     # df["diff_forwards"] = df.value.diff(periods=-1).ffill()
     # df["diff_backwards"] = df.value.diff(periods=1).bfill()
 
+    # finite difference method to calculate derivatives
     accuracy = 2
     for d in range(1, 6):
-
         derivative = FinDiff(0, accuracy, d)
         df[f"d{d}_value"] = derivative(df.value)
     #     df[f"d{d}_value"].head(50).plot()
@@ -118,6 +115,13 @@ def engineer_weather_features(df: pd.DataFrame, weather_path: Path) -> pd.DataFr
     weather = weather.resample("30T").mean()
     weather = weather.interpolate()
 
+    # derivatives of irradiance
+    # accuracy = 2
+    # for d in range(1, 6):
+    #     derivative = FinDiff(0, accuracy, d)
+    #     weather[f"d{d}_solar_irradiance"] = derivative(weather.solar_irradiance)
+
+    # vectorise wind speed components
     weather["windspeed"] = weather.apply(
         lambda x: np.sqrt(x.windspeed_north ** 2 + x.windspeed_east ** 2), axis=1
     )
@@ -125,6 +129,7 @@ def engineer_weather_features(df: pd.DataFrame, weather_path: Path) -> pd.DataFr
         lambda x: np.arctan2(x.windspeed_north, x.windspeed_east), axis=1
     )
 
+    # TODO: read up on this and explore - should not need the pis and the 2s
     weather["sin_winddirection"] = np.sin(
         (2 * np.pi * weather["winddirection"]) / np.pi
     )
@@ -139,12 +144,31 @@ def engineer_weather_features(df: pd.DataFrame, weather_path: Path) -> pd.DataFr
     return df
 
 
-def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Engineer the full feature set"""
-    df = engineer_temporal_features(df)
-    df = engineer_30min_demand_features(df)
-    df = engineer_weather_features(df, DATA_FOLDER / WEATHER)
-    return df
+def train(df, targets):
+    """Transforms the targets from max, min to var and skew, then fits
+    random forest regressor"""
+    features = [col for col in df.columns if col not in targets]
+
+    X = df[features]
+    ys = df[targets].values
+    forward = lambda ys: np.vstack(
+        (
+            # skew component (average which can be compared to value)
+            0.5 * ys.sum(axis=1),
+            # dispersion component (range)
+            ys[:, 1] - ys[:, 0],
+        )
+    ).T
+    backward = lambda ys: np.vstack(
+        (ys[:, 0] - 0.5 * ys[:, 1], ys[:, 0] + 0.5 * ys[:, 1])
+    ).T
+    reg = TransformedTargetRegressor(
+        MultiOutputRegressor(RandomForestRegressor()),
+        func=forward,
+        inverse_func=backward,
+    )
+    reg.fit(X, ys)
+    return reg
 
 
 def get_Xy(basetable: pd.DataFrame, target: str = "max"):
@@ -158,82 +182,26 @@ def get_Xy(basetable: pd.DataFrame, target: str = "max"):
     return X, y
 
 
-basetable = combine_features_targets(TRAINING_FEATURES, TRAINING_TARGETS)
-basetable = engineer_features(basetable)
+def get_feature_importance(reg, X, y, df) -> pd.DataFrame():
 
+    r = permutation_importance(reg, X, y, n_repeats=30, random_state=7)
 
-# max values
-clf_max = RandomForestRegressor(n_estimators=12)
-X_max, y_max = get_Xy(basetable, target="max")
-clf_max = clf_max.fit(X_max, y_max)
-clf_min = RandomForestRegressor(n_estimators=12)
-X_min, y_min = get_Xy(basetable, target="min")
-clf_min = clf_min.fit(X_min, y_min)
+    cols = df.columns.to_list()
+    feature_names = cols[:1] + cols[3:]
+    features_importance = pd.DataFrame(
+        {
+            "mean_importance": r.importances_mean,
+            "std_importance": r.importances_std,
+        },
+        index=feature_names,
+    )
 
-august_features = pd.read_csv(
-    DATA_FOLDER / AUGUST_FEATURES,
-    parse_dates=["time"],
-    index_col="time",
-    dayfirst=True,
-)
-august_features = engineer_features(august_features)
+    features_importance.sort_values(by="mean_importance", inplace=True)
 
+    features_importance.mean_importance.plot.barh(
+        logx=True,
+        figsize=(10, 5),
+        title="Feature importance",
+    )
 
-X_august = august_features
-
-predictions = pd.DataFrame(
-    {
-        "value_max": clf_max.predict(X_august),
-        "value_min": clf_min.predict(X_august),
-    },
-    index=X_august.index,
-)
-
-predictions.to_csv("predictions.csv")
-
-
-# TODO: look into permutation feature importance
-
-# clf.predict()
-
-
-# plt.plot(y[:48], label="Target")
-# plt.plot(X[:48, 0], ls="--", label="Mean value")
-# plt.plot(clf.predict(X[:48]), label="Prediction")
-# plt.legend()
-# plt.show()
-
-# # TODO: test on validation set, look at RMSE
-
-# np.sqrt(mean_squared_error(y, clf.predict(X)))
-
-# looks ok for the day in question - now apply to test data and extend to min
-
-# training_set, validation_set = train_test_split(
-#     basetable,
-#     test_size=0.2,
-#     random_state=7,
-# )
-
-# X_training, y_training = get_Xy(training_set, target='max')
-# X_validation, y_validation = get_Xy(validation_set, target='max')
-
-# results = pd.DataFrame(columns=["n_estimators", "RMSE_train", "RMSE_validation"])
-# for n_estimators in range(1, 31):
-#     """Get RMSE to find best n_estimators hyperparameter"""
-#     clf = RandomForestRegressor(n_estimators=n_estimators)
-#     clf = clf.fit(X_training, y_training)
-#     RMSE_train = np.sqrt(mean_squared_error(y_training, clf.predict(X_training)))
-#     RMSE_validation = np.sqrt(
-#         mean_squared_error(y_validation, clf.predict(X_validation))
-#     )
-#     results = results.append(
-#         {
-#             "n_estimators": n_estimators,
-#             "RMSE_train": RMSE_train,
-#             "RMSE_validation": RMSE_validation,
-#         },
-#         ignore_index=True,
-#     )
-
-# results.set_index("n_estimators").plot()
+    return features_importance
