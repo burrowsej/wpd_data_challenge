@@ -14,6 +14,8 @@ from sklearn.preprocessing import (
 )
 from sklearn.linear_model import LinearRegression, RidgeCV
 from sklearn.metrics import mean_squared_error
+from datetime import datetime, timedelta
+import calendar
 
 
 def read_data(path: Path) -> pd.DataFrame:
@@ -42,11 +44,14 @@ class EngineerTemporalFeatures(BaseEstimator, TransformerMixin):
         self,
         cyclical_encoding: bool = True,
         binary_weekend: bool = False,
-        include_year: bool = False,
+        include_year: bool = False,  # why does this make it worse?
     ):
         self.cyclical_encoding = cyclical_encoding
         self.binary_weekend = binary_weekend
         self.include_year = include_year
+
+    def fit(self, X, y=None):
+        return self
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         df["annual_quantile"] = df.index.map(
@@ -61,7 +66,18 @@ class EngineerTemporalFeatures(BaseEstimator, TransformerMixin):
             df["weekly_quantile"] = df.index.dayofweek
 
         if self.include_year:
-            df["year"] = df.index.year
+            df["year"] = (
+                (
+                    df.index
+                    - df.index.year.map(lambda y: datetime(year=y, month=1, day=1))
+                    - timedelta(days=1)
+                )
+                / df.index.year.map(
+                    lambda y: timedelta(days=366 if calendar.isleap(y) else 365)
+                )
+                + df.index.year
+                - 2019
+            )
 
         if self.cyclical_encoding:
             # encode cyclical features in two separate sin and cos transforms
@@ -103,6 +119,9 @@ class EngineerDemandFeatures(BaseEstimator, TransformerMixin):
         )
         polyreg.fit(X, y)
         return np.sqrt(mean_squared_error(y, polyreg.predict(X)))
+
+    def fit(self, X, y=None):
+        return self
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         # finite difference method to differentiate the values by different
@@ -149,6 +168,9 @@ class EngineerWeatherFeatures(BaseEstimator, TransformerMixin):
         self.finite_diff_accuracy = finite_diff_accuracy
         self.finite_diff_depth = finite_diff_depth
 
+    def fit(self, X, y=None):
+        return self
+
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         weather = pd.read_csv(
             self.weather_path,
@@ -167,6 +189,8 @@ class EngineerWeatherFeatures(BaseEstimator, TransformerMixin):
         weather["winddirection"] = weather.apply(
             lambda x: np.arctan2(x.windspeed_north, x.windspeed_east), axis=1
         )
+
+        weather.drop(columns=["pressure"], inplace=True)
 
         # cyclical encoding of wind direction
         # TODO: read up on this and explore - should not need the pis and the 2s
@@ -198,4 +222,18 @@ class EngineerWeatherFeatures(BaseEstimator, TransformerMixin):
 
         df = df.merge(weather, left_index=True, right_index=True, how="left")
 
+        return df
+
+
+class DropIndex(BaseEstimator, TransformerMixin):
+    """Converts dataframe to array"""
+
+    def __init__(self):
+        pass
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        df.reset_index(drop=True, inplace=True)
         return df

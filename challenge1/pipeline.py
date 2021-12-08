@@ -33,12 +33,13 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import cross_val_score
-from typing import List
+from typing import List, Union
+from sklearn.decomposition import PCA
 
 
 TARGETS = ["value_max", "value_min"]
 rng = np.random.RandomState(7)
-# REGRESSOR = RandomForestRegressor(random_state=rng)  # 0.408
+REGRESSOR = RandomForestRegressor(random_state=rng)  # 0.408
 # REGRESSOR = GradientBoostingRegressor(random_state=rng)  # 0.428
 # REGRESSOR = XGBRegressor(random_state=rng)  # 0.418
 # REGRESSOR = BaggingRegressor(XGBRegressor(random_state=rng))  # 0.4008
@@ -50,14 +51,14 @@ rng = np.random.RandomState(7)
 # REGRESSOR = BaggingRegressor(LGBMRegressor(random_state=rng))  # 0.3981
 # REGRESSOR = AdaBoostRegressor(LGBMRegressor(random_state=rng))  # 0.4101
 
-REGRESSOR = VotingRegressor(
-    [
-        ("rf", RandomForestRegressor(random_state=rng)),
-        ("xgb", XGBRegressor(random_state=rng)),
-        ("lgbm", LGBMRegressor(random_state=rng)),
-        # ("hgb", HistGradientBoostingRegressor(random_state=rng)),
-    ]
-)
+# REGRESSOR = VotingRegressor(
+#     [
+#         ("rf", RandomForestRegressor(random_state=rng)),
+#         ("xgb", XGBRegressor(random_state=rng)),
+#         ("lgbm", LGBMRegressor(random_state=rng)),
+#         # ("hgb", HistGradientBoostingRegressor(random_state=rng)),
+#     ]
+# )
 
 # REGRESSOR = StackingRegressor(
 #     [
@@ -70,12 +71,11 @@ REGRESSOR = VotingRegressor(
 # )
 
 
-def get_Xy(df, targets=TARGETS):
-    """Splits dataframe into X features and ys targets"""
-    features = [col for col in df.columns if col not in targets]
-    X = df[features]
-    ys = df[targets].values
-    return X, ys
+def requires_plotly(func):
+    global go
+    import plotly.graph_objects as go
+
+    return func
 
 
 def transform_targets(regressor=REGRESSOR):
@@ -145,24 +145,6 @@ def train_range(df, targets=TARGETS, reg=REGRESSOR):
     return reg
 
 
-def gridsearch(
-    df,
-    targets=TARGETS,
-    reg=REGRESSOR,
-    parameters={
-        "regressor__estimator__n_estimators": range(50, 300, 50),
-        # "regressor__estimator__max_features": range(),
-    },
-):
-
-    X, ys = get_Xy(df, targets)
-    reg = transform_targets(reg)
-    reg = GridSearchCV(reg, parameters)
-    reg.fit(X, ys)
-
-    return reg
-
-
 def validate(reg, X, Y) -> pd.DataFrame:
     df = Y.copy()
     df[[f"pred({col})" for col in Y]] = reg.predict(X)
@@ -170,12 +152,16 @@ def validate(reg, X, Y) -> pd.DataFrame:
     return df
 
 
-def get_rmse(df: pd.DataFrame, targets: List[str]) -> float:
-    mse = 0
-    for col in targets:
-        mse += mean_squared_error(df[f"pred({col})"], df[f"true({col})"], squared=True)
-    rmse = np.sqrt(mse)
-    print(f"RMSE:{rmse:.4f}")
+def get_rmse(df: pd.DataFrame) -> float:
+    split = int(df.shape[1] / 2)
+    rmse = np.sqrt(
+        mean_squared_error(
+            df.iloc[:, :split],
+            df.iloc[:, split:],
+            multioutput="raw_values",
+        ).sum()
+    )
+    # print(f"RMSE: {rmse:.4f}")
     return rmse
 
 
@@ -190,38 +176,77 @@ def benchmark(X: pd.DataFrame, Y: pd.DataFrame) -> pd.DataFrame:
 def get_score(score_model: float, score_benchmark: float) -> float:
     """Score is ratio of model RMSE and benchmark RMSE"""
     score = score_model / score_benchmark
-    print(f"Score:{score:.4f}")
+    # print(f"Score: {score:.4f}")
     return score
 
 
-def get_feature_importance(df, reg=REGRESSOR) -> pd.DataFrame():
-    """Return a dataframe of the importance of each feature and plot it"""
+def scorer(reg, X, Y):
+    """Scorer for use in cross val etc."""
+    results = validate(reg, X, Y)
+    bench = benchmark(X, Y)
 
-    X, ys = get_Xy(df)
-    reg = transform_targets(reg)
-    reg.fit(X, ys)
+    rmse_model = get_rmse(results)
+    rmse_benchmark = get_rmse(bench)
+    score = get_score(rmse_model, rmse_benchmark)
+    return score
 
-    r = permutation_importance(reg, X, ys)
 
-    feature_names = df.drop(columns=TARGETS).columns.to_list()
-    features_importance = pd.DataFrame(
-        {
-            "mean_importance": r.importances_mean,
-            "std_importance": r.importances_std,
-        },
-        index=feature_names,
+@requires_plotly
+def pca_explained_variance(X: Union[pd.DataFrame, np.ndarray], n=None):
+
+    n = X.shape[1] if n == None else n
+    pca = PCA(n_components=n, random_state=rng)
+    pca.fit(X)
+    pca_results = pd.Series(
+        np.cumsum(pca.explained_variance_ratio_), index=range(1, n + 1)
     )
 
-    features_importance.sort_values(by="mean_importance", inplace=True)
+    # import matplotlib.pyplot as plt
+    # fig, ax = plt.subplots(figsize=(12,6))
+    # ax.plot(pca_results.index, pca_results.values)
+    # ax.set_xlabel('PCA Dimensions'), ax.set_ylabel('Explained Variance')
+    # ax.set_yscale('log')
+    # plt.show()
 
-    features_importance.mean_importance.plot.barh(
-        xerr=features_importance.std_importance,
-        logx=True,
-        figsize=(10, 5),
-        title="Feature importance",
+    fig = go.Figure(data=go.Scatter(x=pca_results.index, y=pca_results.values))
+    fig.update_layout(
+        xaxis_title="PCA Dimensions",
+        yaxis_title="Explained Variance",
+        yaxis_tickformat="%",
+        xaxis_dtick=1,
     )
 
-    return features_importance
+    fig.show(renderer="browser")
+
+
+# def get_feature_importance(df, reg=REGRESSOR) -> pd.DataFrame():
+#     """Return a dataframe of the importance of each feature and plot it"""
+
+#     X, ys = get_Xy(df)
+#     reg = transform_targets(reg)
+#     reg.fit(X, ys)
+
+#     r = permutation_importance(reg, X, ys)
+
+#     feature_names = df.drop(columns=TARGETS).columns.to_list()
+#     features_importance = pd.DataFrame(
+#         {
+#             "mean_importance": r.importances_mean,
+#             "std_importance": r.importances_std,
+#         },
+#         index=feature_names,
+#     )
+
+#     features_importance.sort_values(by="mean_importance", inplace=True)
+
+#     features_importance.mean_importance.plot.barh(
+#         xerr=features_importance.std_importance,
+#         logx=True,
+#         figsize=(10, 5),
+#         title="Feature importance",
+#     )
+
+#     return features_importance
 
 
 # import dabl
