@@ -81,6 +81,9 @@ reg = transform_targets(
     ),
 )
 
+# TODO: rolling polyfit over half/quarter day
+# TODO: check feature importance
+
 # scores = cross_val_score(
 #     reg,
 #     X_train.reset_index(drop=True),

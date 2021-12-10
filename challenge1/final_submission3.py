@@ -1,7 +1,12 @@
 from pathlib import Path
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestRegressor, VotingRegressor
+from sklearn.ensemble import (
+    RandomForestRegressor,
+    VotingRegressor,
+    ExtraTreesRegressor,
+    StackingRegressor,
+)
 from sklearn.linear_model import RANSACRegressor, LinearRegression
 from lightgbm import LGBMRegressor
 from xgboost import XGBRegressor
@@ -60,8 +65,58 @@ Y_train = read_data(DATA_FOLDER / TRAINING_TARGETS)
 X_validate = read_data(DATA_FOLDER / VALIDATION_FEATURES)
 Y_validate = read_data(DATA_FOLDER / VALIDATION_TARGETS)
 
+X_validate = X_validate[: len(Y_validate) - 27]
+Y_validate = Y_validate[: len(Y_validate) - 27]
+
 X_train = pd.concat((X_train, X_validate))
 Y_train = pd.concat((Y_train, Y_validate))
+
+
+# X_train = pipeline.transform(X_train)
+
+
+# pca_explained_variance(X_train)
+
+# pca = PCA(n_components=9, random_state=rng)
+# X_train = pca.fit_transform(X_train)
+
+
+# # print(pca.explained_variance_ratio_)
+
+reg = make_pipeline(
+    # PCA(n_components=2, random_state=rng),
+    transform_targets(
+        # RandomForestRegressor(random_state=rng, n_jobs=-1),  # 0.4550
+        # ExtraTreesRegressor(random_state=rng, n_jobs=-1),
+        # RANSACRegressor(
+        #     RandomForestRegressor(random_state=rng, max_depth=18, n_jobs=-1),
+        #     min_samples=29,
+        #     random_state=rng,
+        # ), # 0.47149
+        # LGBMRegressor(random_state=rng, n_jobs=-1),  # 0.4506  # num_leaves=30,
+        # XGBRegressor(random_state=rng, n_jobs=-1),  # 0.4643
+        StackingRegressor(
+            [
+                ("et", ExtraTreesRegressor(random_state=rng)),
+                ("rf", ExtraTreesRegressor(random_state=rng)),
+                ("xgb", XGBRegressor(random_state=rng)),
+                ("lgbm", LGBMRegressor(random_state=rng)),
+                # ("hgb", HistGradientBoostingRegressor(random_state=rng)),
+            ]
+        ),
+        # VotingRegressor(
+        #     [
+        # ("rf", RandomForestRegressor(random_state=rng)),
+        #         ("rf", RandomForestRegressor(random_state=rng)),
+        #         ("rf", ExtraTreesRegressor(random_state=rng)),
+        #         ("xgb", XGBRegressor(random_state=rng)),
+        #         ("lgbm", LGBMRegressor(random_state=rng)),
+        #         # ("hgb", HistGradientBoostingRegressor(random_state=rng)),
+        #     ]
+        # ), #0.4332
+    ),
+)
+
 
 pipeline = make_pipeline(
     EngineerTemporalFeatures(cyclical_encoding=True),
@@ -70,39 +125,10 @@ pipeline = make_pipeline(
     "passthrough",
 )
 
-X_train = pipeline.transform(X_train)
 
+X_train = pipeline.fit_transform(X_train)
+X_validate = pipeline.fit_transform(X_validate)
 
-pca_explained_variance(X_train)
-
-# pca = PCA(n_components=9, random_state=rng)
-# X_train = pca.fit_transform(X_train)
-
-
-# # print(pca.explained_variance_ratio_)
-
-# reg = make_pipeline(
-#     # PCA(n_components=2, random_state=rng),
-#     transform_targets(
-#         # RandomForestRegressor(random_state=rng, max_depth=18, n_jobs=-1),  # 0.4550
-#         # RANSACRegressor(
-#         #     RandomForestRegressor(random_state=rng, max_depth=18, n_jobs=-1),
-#         #     min_samples=29,
-#         #     random_state=rng,
-#         # ), # 0.47149
-#         # LGBMRegressor(random_state=rng, n_jobs=-1),  # 0.4506  # num_leaves=30,
-#         # XGBRegressor(random_state=rng, n_jobs=-1),  # 0.4643
-#         LinearRegression()
-#         # VotingRegressor(
-#         #     [
-#         #         ("rf", RandomForestRegressor(random_state=rng)),
-#         #         ("xgb", XGBRegressor(random_state=rng)),
-#         #         ("lgbm", LGBMRegressor(random_state=rng)),
-#         #         # ("hgb", HistGradientBoostingRegressor(random_state=rng)),
-#         #     ]
-#         # ),
-#     ),
-# )
 
 # scores = cross_val_score(
 #     reg,
@@ -112,7 +138,16 @@ pca_explained_variance(X_train)
 #     cv=5,
 # )
 
+
 # print(f"XvalScore: {scores.mean():.4f}")
+
+# reg.fit(X_train, Y_train)
+
+# scorer(
+#     reg,
+#     X_validate,
+#     Y_validate,
+# )
 
 
 # param_grid = {
@@ -137,26 +172,54 @@ pca_explained_variance(X_train)
 # print("\nBest...")
 # print(grid_search.best_estimator_)
 
-# X_test = read_data(DATA_FOLDER / TEST_FEATURES)
+X_test = read_data(DATA_FOLDER / TEST_FEATURES)
 
-# X_test = pipeline.transform(X_test)
+X_test = pipeline.transform(X_test)
 
-# reg.fit(X_train.reset_index(drop=True), Y_train.reset_index(drop=True))
+reg.fit(X_train, Y_train)
 
 
-# predictions = pd.DataFrame(
-#     reg.predict(X_test),
-#     columns=TARGETS,
-#     index=X_test.index,
-# )
+predictions = pd.DataFrame(
+    reg.predict(X_test),
+    columns=TARGETS,
+    index=X_test.index,
+)
 
 # results.head(24*2).plot()
 
 # template = pd.read_csv(DATA_FOLDER / SEPTEMBER_TEMPLATE)
 
-# predictions.to_csv("predictions.csv")
+predictions.to_csv("predictions.csv")
 
 
 # print("Parameters currently in use:\n")
 
 # print(reg.get_params())
+
+
+# from sklearn.inspection import permutation_importance
+
+# # # reg.fit(X_train, Y_train)
+
+# result = permutation_importance(reg, X_train, Y_train)
+
+# result.importances_mean
+
+
+# feature_names = X_train.columns.to_list()
+# features_importance = pd.DataFrame(
+#     {
+#         "mean_importance": result.importances_mean,
+#         "std_importance": result.importances_std,
+#     },
+#     index=feature_names,
+# )
+
+# features_importance.sort_values(by="mean_importance", inplace=True)
+
+# features_importance.mean_importance.plot.barh(
+#     xerr=features_importance.std_importance,
+#     logx=True,
+#     figsize=(10, 5),
+#     title="Feature importance",
+# )

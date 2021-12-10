@@ -188,6 +188,7 @@ def scorer(reg, X, Y):
     rmse_model = get_rmse(results)
     rmse_benchmark = get_rmse(bench)
     score = get_score(rmse_model, rmse_benchmark)
+    print(score)
     return score
 
 

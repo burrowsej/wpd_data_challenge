@@ -42,7 +42,7 @@ class EngineerTemporalFeatures(BaseEstimator, TransformerMixin):
 
     def __init__(
         self,
-        cyclical_encoding: bool = True,
+        cyclical_encoding: bool = False,
         binary_weekend: bool = False,
         include_year: bool = False,  # why does this make it worse?
     ):
@@ -98,16 +98,18 @@ class EngineerDemandFeatures(BaseEstimator, TransformerMixin):
         include_finite_diff: bool = True,
         finite_diff_accuracy: int = 2,
         finite_diff_depth: int = 6,
-        include_noise_feature: bool = True,
+        include_noise_feature: bool = False,
         noise_polynomial_order: int = 7,
         include_basic_forward_backward_diff: bool = True,
+        include_new_noise_feature: bool = True,
     ):
         self.include_finite_diff = include_finite_diff
         self.finite_diff_accuracy = finite_diff_accuracy
         self.finite_diff_depth = finite_diff_depth
         self.include_noise_feature = include_noise_feature
         self.noise_polynomial_order = noise_polynomial_order
-        self.include_basic_forward_backward_diff = False
+        self.include_basic_forward_backward_diff = include_basic_forward_backward_diff
+        self.include_new_noise_feature = include_new_noise_feature
 
     def get_rmse(self, day: pd.DataFrame) -> float:
         """Fit a polynomial and get the rmse to quantify noise for the day"""
@@ -119,6 +121,16 @@ class EngineerDemandFeatures(BaseEstimator, TransformerMixin):
         )
         polyreg.fit(X, y)
         return np.sqrt(mean_squared_error(y, polyreg.predict(X)))
+
+    def residuals(self, vals, deg: int = 6):
+        """Get the residuals (sum of RMSE) from fitting a polynomial"""
+        _, residuals, *_ = np.polyfit(
+            range(len(vals)),
+            vals,
+            deg=deg,
+            full=True,
+        )
+        return residuals
 
     def fit(self, X, y=None):
         return self
@@ -140,6 +152,24 @@ class EngineerDemandFeatures(BaseEstimator, TransformerMixin):
             df = df.merge(rmse_by_day, left_index=True, right_index=True, how="left")
             df.daily_noise.ffill(inplace=True)
 
+        if self.include_new_noise_feature:
+
+            for deg in (1, 2, 4, 8, 16):
+                window = deg * 2 if deg != 1 else 3
+                df[f"newnoise_{deg}hr"] = (
+                    df.value.rolling(
+                        window=window,
+                        min_periods=deg + 2,
+                        center=True,
+                    )
+                    .apply(
+                        self.residuals,
+                        kwargs=dict(deg=deg),
+                    )
+                    .ffill()
+                    .bfill()
+                )
+
         # basic forward and backwards difference
         if self.include_basic_forward_backward_diff:
             df["diff_forwards"] = df.value.diff(periods=-1).ffill()
@@ -159,7 +189,7 @@ class EngineerWeatherFeatures(BaseEstimator, TransformerMixin):
         interpolation_kwargs: Dict = dict(method="spline", order=3),
         include_finite_diff_irradiance: bool = True,
         finite_diff_accuracy: int = 2,
-        finite_diff_depth: int = 6,
+        finite_diff_depth: int = 2,
     ):
         self.weather_path = weather_path
         self.adjust_15mins = adjust_15mins
