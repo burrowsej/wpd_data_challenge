@@ -98,7 +98,7 @@ reg = make_pipeline(
         StackingRegressor(
             [
                 ("et", ExtraTreesRegressor(random_state=rng)),
-                ("rf", ExtraTreesRegressor(random_state=rng)),
+                ("rf", RandomForestRegressor(random_state=rng)),
                 ("xgb", XGBRegressor(random_state=rng)),
                 ("lgbm", LGBMRegressor(random_state=rng)),
                 # ("hgb", HistGradientBoostingRegressor(random_state=rng)),
@@ -197,29 +197,29 @@ predictions.to_csv("predictions.csv")
 # print(reg.get_params())
 
 
-# from sklearn.inspection import permutation_importance
+from sklearn.inspection import permutation_importance
 
-# # # reg.fit(X_train, Y_train)
+reg.fit(X_train, Y_train)
 
-# result = permutation_importance(reg, X_train, Y_train)
+result = permutation_importance(reg, X_train, Y_train)
 
-# result.importances_mean
+result.importances_mean
 
 
-# feature_names = X_train.columns.to_list()
-# features_importance = pd.DataFrame(
-#     {
-#         "mean_importance": result.importances_mean,
-#         "std_importance": result.importances_std,
-#     },
-#     index=feature_names,
-# )
+feature_names = X_train.columns.to_list()
+features_importance = pd.DataFrame(
+    {
+        "mean_importance": result.importances_mean,
+        "std_importance": result.importances_std,
+    },
+    index=feature_names,
+)
 
-# features_importance.sort_values(by="mean_importance", inplace=True)
+features_importance.sort_values(by="mean_importance", inplace=True)
 
-# features_importance.mean_importance.plot.barh(
-#     xerr=features_importance.std_importance,
-#     logx=True,
-#     figsize=(10, 5),
-#     title="Feature importance",
-# )
+features_importance.mean_importance.plot.barh(
+    xerr=features_importance.std_importance,
+    logx=True,
+    figsize=(10, 5),
+    title="Feature importance",
+)
