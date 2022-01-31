@@ -1,2 +1,5 @@
 challenge1/data/*
 !challenge1/data/.gitkeep
+
+challenge2/data/*
+!challenge2/data/.gitkeep
