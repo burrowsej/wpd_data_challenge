@@ -1,11 +1,17 @@
 from pathlib import Path
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import RandomForestRegressor, VotingRegressor
+from sklearn.linear_model import RANSACRegressor
+from lightgbm import LGBMRegressor
+from xgboost import XGBRegressor
 from sklearn.model_selection import cross_val_score, train_test_split, GridSearchCV
 from sklearn.pipeline import make_pipeline
 from sklearn.metrics import mean_squared_error
 from typing import List
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+
 
 from feature_engineering import (
     read_data,
@@ -16,17 +22,15 @@ from feature_engineering import (
 )
 from pipeline import (
     TARGETS,
-    get_Xy,
     transform_targets,
     train,
     train_mean,
     train_range,
-    gridsearch,
-    get_feature_importance,
     validate,
     get_rmse,
     benchmark,
     get_score,
+    scorer,
 )
 
 DATA_FOLDER = Path("data")
@@ -50,65 +54,57 @@ basetable = combine_features_targets(
 )
 
 
-engineer_features = make_pipeline(
-    EngineerTemporalFeatures(),
-    EngineerDemandFeatures(),
-    EngineerWeatherFeatures(weather_path=DATA_FOLDER / WEATHER),
-    "passthrough",
-)
-reg = transform_targets(RandomForestRegressor(random_state=rng))
-
-
 X_train = read_data(DATA_FOLDER / TRAINING_FEATURES)
 Y_train = read_data(DATA_FOLDER / TRAINING_TARGETS)
 X_validate = read_data(DATA_FOLDER / VALIDATION_FEATURES)
 Y_validate = read_data(DATA_FOLDER / VALIDATION_TARGETS)
 
-# X_train = pd.concat((X_train, X_validate))
-# Y_train = pd.concat((Y_train, Y_validate))
-X_train = engineer_features.transform(X_train)
+X_train = pd.concat((X_train, X_validate))
+Y_train = pd.concat((Y_train, Y_validate))
 
-reg.fit(X_train, Y_train)
-
-results = validate(reg, X_train, Y_train)
-benchmark = benchmark(X_train, Y_train)
-
-rmse_model = get_rmse(results)
-
-
-np.sqrt(
-    mean_squared_error(
-        results.iloc[:, :2],
-        results.iloc[:, 2:],
-        multioutput="raw_values",
-    ).sum()
+pipeline = make_pipeline(
+    EngineerTemporalFeatures(cyclical_encoding=True),
+    EngineerDemandFeatures(),
+    EngineerWeatherFeatures(weather_path=DATA_FOLDER / WEATHER),
+    "passthrough",
 )
 
+X_train = pipeline.transform(X_train)
 
-rmse = cross_val_score(reg, X_train, Y_train, scoring="neg_mean_squared_error", cv=3)
+reg = transform_targets(
+    VotingRegressor(
+        [
+            ("rf", RandomForestRegressor(random_state=rng)),
+            ("xgb", XGBRegressor(random_state=rng)),
+            ("lgbm", LGBMRegressor(random_state=rng)),
+        ]
+    ),
+)
 
-rmse_benchmark = get_rmse(benchmark, Y_train.columns)
+# TODO: rolling polyfit over half/quarter day
+# TODO: check feature importance
 
-
-get_score(rmse_model, rmse_benchmark)
-
-
-# X_september = read_data(DATA_FOLDER / TEST_FEATURES)
-# X_september = engineer_features.transform(X_september)
-
-# predictions = pd.DataFrame(
-#     reg.predict(X_september),
-#     columns=TARGETS,
-#     index=X_september.index,
+# scores = cross_val_score(
+#     reg,
+#     X_train.reset_index(drop=True),
+#     Y_train.reset_index(drop=True),
+#     scoring=scorer,
+#     cv=5,
 # )
 
-# results.head(24*2).plot()
-
-# template = pd.read_csv(DATA_FOLDER / SEPTEMBER_TEMPLATE)
-
-# predictions.to_csv("predictions.csv")
+# print(f"XvalScore: {scores.mean():.4f}")
 
 
-# print("Parameters currently in use:\n")
+X_test = read_data(DATA_FOLDER / TEST_FEATURES)
 
-# print(reg.get_params())
+X_test = pipeline.transform(X_test)
+
+reg.fit(X_train.reset_index(drop=True), Y_train.reset_index(drop=True))
+
+
+predictions = pd.DataFrame(
+    reg.predict(X_test),
+    columns=TARGETS,
+    index=X_test.index,
+)
+predictions.to_csv("predictions.csv")
