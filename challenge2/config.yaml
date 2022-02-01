@@ -1,0 +1,14 @@
+data_folder: data
+sites:
+  - name: 'BOURNEVILLE CV 7'
+    file_training: "BOURNVILLE CB 7 Training Data.csv"
+    file_combined: "BOURNVILLE CB 7 Combined Load 202201171524.csv"
+  - name: 'BRADLEY STOKE CB 8'
+    file_training: "BRADLEY STOKE CB 8 Training Data.csv"
+    file_combined: "BRADLEY STOKE CB 8 Combined Load 202201171524.csv"
+  - name: 'STRATTON CB 4041'
+    file_training: "STRATTON CB 4041 Training Data.csv"
+    file_combined: "STRATTON CB 4041 Combined Load 202201171524.csv"
+templates:
+  - name: phase1
+    file: "template_1.csv"
