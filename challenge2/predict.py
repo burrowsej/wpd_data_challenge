@@ -58,7 +58,18 @@ for site in config.sites:
 
     X.rename(columns={"time": "ds", "maxvalue": "y"}, inplace=True)
 
-    m = Prophet(yearly_seasonality=True)
+    m = Prophet(
+        # n_changepoints=25,
+        changepoint_range=0.7,
+        yearly_seasonality=True,
+        # weekly_seasonality=True,
+        # daily_seasonality=True,
+        # seasonality_mode="multiplicative",
+        # seasonality_prior_scale=1,
+        # holidays_prior_scale=1,
+        changepoint_prior_scale=0.0006,  # 0.0104
+    )
+    m.add_country_holidays(country_name="England")
     m.fit(X)
 
     df = pd.read_csv(
@@ -73,16 +84,16 @@ for site in config.sites:
     forecast["charger_daily_max"] = forecast.resample("D").charger.transform(max)
 
     # plot something
-    size = 1000
-    figsize = (12, 6)
-    forecast.charger.head(size).plot(figsize=figsize, label="Charger")
-    forecast.charger_daily_max.head(size).plot(
-        figsize=figsize, label="Charger Daily Max"
-    )
-    forecast.yhat.head(size).plot(figsize=figsize, label="Substation")
-    forecast.value.head(size).plot(figsize=figsize, label="Combined")
-    plt.legend()
-    plt.show()
+    # size = 1000
+    # figsize = (12, 6)
+    # forecast.charger.head(size).plot(figsize=figsize, label="Charger")
+    # forecast.charger_daily_max.head(size).plot(
+    #     figsize=figsize, label="Charger Daily Max"
+    # )
+    # forecast.yhat.head(size).plot(figsize=figsize, label="Substation")
+    # forecast.value.head(size).plot(figsize=figsize, label="Combined")
+    # plt.legend()
+    # plt.show()
 
     # Generate output for scoring
     daily = forecast.resample("D").charger.max().to_frame()
